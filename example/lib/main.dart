@@ -20,22 +20,22 @@ class MyApp extends StatefulWidget {
 class _MyAppState extends State<MyApp> {
   String geofenceState = 'N/A';
   List<String> registeredGeofences = [];
-  double latitude = 37.419851;
-  double longitude = -122.078818;
-  double radius = 150.0;
+  double latitude = 39.9559;
+  double longitude = -75.1918;
+  double radius = 100.0;
   ReceivePort port = ReceivePort();
   final List<GeofenceEvent> triggers = <GeofenceEvent>[
-    GeofenceEvent.enter,
+//    GeofenceEvent.enter,
     GeofenceEvent.dwell,
-    GeofenceEvent.exit
+//    GeofenceEvent.exit
   ];
   final AndroidGeofencingSettings androidSettings = AndroidGeofencingSettings(
       initialTrigger: <GeofenceEvent>[
-        GeofenceEvent.enter,
-        GeofenceEvent.exit,
+//        GeofenceEvent.enter,
+//        GeofenceEvent.exit,
         GeofenceEvent.dwell
       ],
-      loiteringDelay: 1000 * 60);
+      loiteringDelay: 1000 * 5);
 
   @override
   void initState() {
@@ -61,7 +61,8 @@ class _MyAppState extends State<MyApp> {
   // Platform messages are asynchronous, so we initialize in an async method.
   Future<void> initPlatformState() async {
     print('Initializing...');
-    await GeofencingManager.initialize();
+    var result = await GeofencingManager.initialize();
+    print(result);
     print('Initialization done');
   }
 

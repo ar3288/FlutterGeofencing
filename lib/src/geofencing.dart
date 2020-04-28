@@ -101,10 +101,10 @@ class GeofencingManager {
       MethodChannel('plugins.flutter.io/geofencing_plugin_background');
 
   /// Initialize the plugin and request relevant permissions from the user.
-  static Future<void> initialize() async {
+  static Future<dynamic> initialize() async {
     final CallbackHandle callback =
         PluginUtilities.getCallbackHandle(callbackDispatcher);
-    await _channel.invokeMethod('GeofencingPlugin.initializeService',
+    return await _channel.invokeMethod('GeofencingPlugin.initializeService',
         <dynamic>[callback.toRawHandle()]);
   }
 
@@ -145,7 +145,8 @@ class GeofencingManager {
       PluginUtilities.getCallbackHandle(callback).toRawHandle()
     ];
     args.addAll(region._toArgs());
-    await _channel.invokeMethod('GeofencingPlugin.registerGeofence', args);
+    var tmp = await _channel.invokeMethod('GeofencingPlugin.registerGeofence', args);
+    print(tmp);
   }
 
   /// get all geofence identifiers

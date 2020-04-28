@@ -16,7 +16,7 @@ class GeofencingBroadcastReceiver : BroadcastReceiver() {
         private const val TAG = "GeofencingBroadcastReceiver"
     }
     override fun onReceive(context: Context, intent: Intent) {
-        FlutterMain.ensureInitializationComplete(context, null)
+//TODO        FlutterMain.ensureInitializationComplete(context, null)
         GeofencingService.enqueueWork(context, intent)
     }
 }

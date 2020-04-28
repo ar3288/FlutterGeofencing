@@ -41,9 +41,11 @@ class IsolateHolderService : Service() {
         val channel = NotificationChannel(CHANNEL_ID,
                 "Flutter Geofencing Plugin",
                 NotificationManager.IMPORTANCE_LOW)
+
         val imageId = getResources().getIdentifier("ic_launcher", "mipmap", getPackageName())
 
         (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(channel)
+
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
                 .setContentTitle("Almost home!")
                 .setContentText("Within 1KM of home. Fine location tracking enabled.")

@@ -21,12 +21,96 @@ import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.PluginRegistry.Registrar
+import io.flutter.embedding.engine.plugins.FlutterPlugin;
+import io.flutter.embedding.engine.plugins.activity.ActivityAware
+import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
 import org.json.JSONArray
 
-class GeofencingPlugin(context: Context, activity: Activity?) : MethodCallHandler {
-  private val mContext = context
-  private val mActivity = activity
-  private val mGeofencingClient = LocationServices.getGeofencingClient(mContext)
+class GeofencingPlugin(context: Context? = null, activity: Activity? = null) : MethodCallHandler, FlutterPlugin, ActivityAware {
+  private var mContext = context
+  private var mActivity = activity
+  private var mGeofencingClient : GeofencingClient? = null
+  private var mMethodChannel : MethodChannel? = null
+
+  private fun initializePlugin(context: Context, activity: Activity?, methodChannel: MethodChannel) {
+    this.mContext = context
+    this.mActivity = activity
+    this.mMethodChannel = mMethodChannel
+
+    mGeofencingClient = LocationServices.getGeofencingClient(context)
+
+    methodChannel.setMethodCallHandler(this)
+  }
+
+  override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
+    if (this.mMethodChannel != null) {
+      return
+    }
+
+    Log.i(TAG, "onAttachedToEngine")
+
+    val channel = MethodChannel(binding.binaryMessenger, "plugins.flutter.io/geofencing_plugin")
+
+    initializePlugin(binding.applicationContext, null, channel)
+  }
+
+  override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
+    Log.i(TAG, "onDetachedFromEngine")
+
+    this.mContext = null
+    this.mGeofencingClient = null
+
+    mMethodChannel?.setMethodCallHandler(null)
+    this.mMethodChannel = null
+  }
+
+  override fun onDetachedFromActivity() {
+    this.mActivity = null
+  }
+
+  override fun onReattachedToActivityForConfigChanges(binding: ActivityPluginBinding) {
+    this.mActivity = binding.activity
+  }
+
+  override fun onAttachedToActivity(binding: ActivityPluginBinding) {
+    this.mActivity = binding.activity
+  }
+
+  override fun onDetachedFromActivityForConfigChanges() {
+    this.mActivity = null
+  }
+
+  override fun onMethodCall(call: MethodCall, result: Result) {
+    val args = call.arguments<ArrayList<*>>()
+
+    when(call.method) {
+      "GeofencingPlugin.initializeService" -> {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+          mActivity?.requestPermissions(REQUIRED_PERMISSIONS, 12312)
+        }
+
+        if (mContext == null) {
+          result.error("MISSING_CONTEXT_INIT", "Context was null during initializationm", mContext)
+        }
+        else {
+          initializeService(mContext!!, args)
+
+          result.success(true)
+        }
+      }
+      "GeofencingPlugin.registerGeofence" -> registerGeofence(mContext,
+              mGeofencingClient,
+              args,
+              result,
+              true)
+      "GeofencingPlugin.removeGeofence" -> removeGeofence(mContext,
+              mGeofencingClient,
+              args,
+              result)
+      "GeofencingPlugin.getRegisteredGeofenceIds" -> getRegisteredGeofenceIds(mContext, result)
+      else -> result.notImplemented()
+    }
+  }
 
   companion object {
     @JvmStatic
@@ -42,7 +126,12 @@ class GeofencingPlugin(context: Context, activity: Activity?) : MethodCallHandle
     @JvmStatic
     val PERSISTENT_GEOFENCES_IDS = "persistent_geofences_ids"
     @JvmStatic
-    private val REQUIRED_PERMISSIONS = arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+    private val REQUIRED_PERMISSIONS = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      arrayOf(Manifest.permission.ACCESS_FINE_LOCATION,
+              Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+    } else {
+      arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+    }
     @JvmStatic
     private val sGeofenceCacheLock = Object()
 
@@ -50,36 +139,30 @@ class GeofencingPlugin(context: Context, activity: Activity?) : MethodCallHandle
     fun registerWith(registrar: Registrar) {
       val plugin = GeofencingPlugin(registrar.context(), registrar.activity())
       val channel = MethodChannel(registrar.messenger(), "plugins.flutter.io/geofencing_plugin")
+
+      plugin.initializePlugin(registrar.context(), registrar.activity(), channel)
+
       channel.setMethodCallHandler(plugin)
     }
 
     @JvmStatic
-    fun reRegisterAfterReboot(context: Context) {
-      synchronized(sGeofenceCacheLock) {
-        var p = context.getSharedPreferences(SHARED_PREFERENCES_KEY, Context.MODE_PRIVATE)
-        var persistentGeofences = p.getStringSet(PERSISTENT_GEOFENCES_IDS, null)
-        if (persistentGeofences == null) {
-          return
-        }
-        for (id in persistentGeofences) {
-          val gfJson = p.getString(getPersistentGeofenceKey(id), null)
-          if (gfJson == null) {
-            continue
-          }
-          val gfArgs = JSONArray(gfJson)
-          val list = ArrayList<Object>()
-          for (i in 0 until gfArgs.length()) {
-            list.add(gfArgs.get(i) as Object)
-          }
-          val geoClient = LocationServices.getGeofencingClient(context)
-          registerGeofence(context, geoClient, list, null, false)
-        }
-      }
+    private fun initializeService(context: Context, args: ArrayList<*>?) {
+      Log.d(TAG, "Initializing GeofencingService")
+
+      val callbackHandle = args!![0] as Long
+
+      GeofencingService.setCallbackDispatcher(context, callbackHandle)
+      GeofencingService.startBackgroundIsolate(context, callbackHandle)
+
+//FIXME - not sure if I should remove this?      context?.getSharedPreferences(SHARED_PREFERENCES_KEY, Context.MODE_PRIVATE)
+//              ?.edit()
+//              ?.putLong(CALLBACK_DISPATCHER_HANDLE_KEY, callbackHandle)
+//              ?.apply()
     }
 
     @JvmStatic
-    private fun registerGeofence(context: Context,
-                                 geofencingClient: GeofencingClient,
+    private fun registerGeofence(context: Context?,
+                                 geofencingClient: GeofencingClient?,
                                  args: ArrayList<*>?,
                                  result: Result?,
                                  cache: Boolean) {
@@ -101,14 +184,22 @@ class GeofencingPlugin(context: Context, activity: Activity?) : MethodCallHandle
               .setNotificationResponsiveness(notificationResponsiveness)
               .setExpirationDuration(expirationDuration)
               .build()
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
-              (context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
-                      == PackageManager.PERMISSION_DENIED)) {
+
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && context?.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
+              == PackageManager.PERMISSION_DENIED) {
         val msg = "'registerGeofence' requires the ACCESS_FINE_LOCATION permission."
         Log.w(TAG, msg)
         result?.error(msg, null, null)
       }
-      geofencingClient.addGeofences(getGeofencingRequest(geofence, initialTriggers),
+
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && context?.checkSelfPermission(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+              == PackageManager.PERMISSION_DENIED) {
+        val msg = "'registerGeofence' requires the ACCESS_BACKGROUND_LOCATION permission."
+        Log.w(TAG, msg)
+        result?.error(msg, null, null)
+      }
+
+      geofencingClient?.addGeofences(getGeofencingRequest(geofence, initialTriggers),
               getGeofencePendingIndent(context, callbackHandle))?.run {
         addOnSuccessListener {
           Log.i(TAG, "Successfully added geofence")
@@ -125,58 +216,12 @@ class GeofencingPlugin(context: Context, activity: Activity?) : MethodCallHandle
     }
 
     @JvmStatic
-    private fun addGeofenceToCache(context: Context, id: String, args: ArrayList<*>) {
-      synchronized(sGeofenceCacheLock) {
-        var p = context.getSharedPreferences(SHARED_PREFERENCES_KEY, Context.MODE_PRIVATE)
-        var obj = JSONArray(args)
-        var persistentGeofences = p.getStringSet(PERSISTENT_GEOFENCES_IDS, null)
-        if (persistentGeofences == null) {
-          persistentGeofences = HashSet<String>()
-        } else {
-          persistentGeofences = HashSet<String>(persistentGeofences)
-        }
-        persistentGeofences.add(id)
-        context.getSharedPreferences(SHARED_PREFERENCES_KEY, Context.MODE_PRIVATE)
-                .edit()
-                .putStringSet(PERSISTENT_GEOFENCES_IDS, persistentGeofences)
-                .putString(getPersistentGeofenceKey(id), obj.toString())
-                .apply()
-      }
-    }
-
-
-    @JvmStatic
-    private fun initializeService(context: Context, args: ArrayList<*>?) {
-      Log.d(TAG, "Initializing GeofencingService")
-      val callbackHandle = args!![0] as Long
-      context.getSharedPreferences(SHARED_PREFERENCES_KEY, Context.MODE_PRIVATE)
-              .edit()
-              .putLong(CALLBACK_DISPATCHER_HANDLE_KEY, callbackHandle)
-              .apply()
-    }
-
-    @JvmStatic
-    private fun getGeofencingRequest(geofence: Geofence, initialTrigger: Int): GeofencingRequest {
-      return GeofencingRequest.Builder().apply {
-        setInitialTrigger(initialTrigger)
-        addGeofence(geofence)
-      }.build()
-    }
-
-    @JvmStatic
-    private fun getGeofencePendingIndent(context: Context, callbackHandle: Long): PendingIntent {
-      val intent = Intent(context, GeofencingBroadcastReceiver::class.java)
-              .putExtra(CALLBACK_HANDLE_KEY, callbackHandle)
-      return PendingIntent.getBroadcast(context, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT)
-    }
-
-    @JvmStatic
-    private fun removeGeofence(context: Context,
-                               geofencingClient: GeofencingClient,
+    private fun removeGeofence(context: Context?,
+                               geofencingClient: GeofencingClient?,
                                args: ArrayList<*>?,
                                result: Result) {
       val ids = listOf(args!![0] as String)
-      geofencingClient.removeGeofences(ids).run {
+      geofencingClient?.removeGeofences(ids)?.run {
         addOnSuccessListener {
           for (id in ids) {
             removeGeofenceFromCache(context, id)
@@ -190,11 +235,11 @@ class GeofencingPlugin(context: Context, activity: Activity?) : MethodCallHandle
     }
 
     @JvmStatic
-    private fun getRegisteredGeofenceIds(context: Context, result: Result) {
+    private fun getRegisteredGeofenceIds(context: Context?, result: Result) {
       synchronized(sGeofenceCacheLock) {
         val list = ArrayList<String>()
-        var p = context.getSharedPreferences(SHARED_PREFERENCES_KEY, Context.MODE_PRIVATE)
-        var persistentGeofences = p.getStringSet(PERSISTENT_GEOFENCES_IDS, null)
+        val p = context?.getSharedPreferences(SHARED_PREFERENCES_KEY, Context.MODE_PRIVATE)
+        val persistentGeofences = p?.getStringSet(PERSISTENT_GEOFENCES_IDS, null)
         if (persistentGeofences != null && persistentGeofences.size > 0) {
           for (id in persistentGeofences) {
             list.add(id)
@@ -205,49 +250,84 @@ class GeofencingPlugin(context: Context, activity: Activity?) : MethodCallHandle
     }
 
     @JvmStatic
-    private fun removeGeofenceFromCache(context: Context, id: String) {
+    fun reRegisterAfterReboot(context: Context?) {
       synchronized(sGeofenceCacheLock) {
-        var p = context.getSharedPreferences(SHARED_PREFERENCES_KEY, Context.MODE_PRIVATE)
-        var persistentGeofences = p.getStringSet(PERSISTENT_GEOFENCES_IDS, null)
-        if (persistentGeofences == null) {
-          return
+        val p = context?.getSharedPreferences(SHARED_PREFERENCES_KEY, Context.MODE_PRIVATE)
+        val persistentGeofences = p?.getStringSet(PERSISTENT_GEOFENCES_IDS, null) ?: return
+        for (id in persistentGeofences) {
+          val gfJson = p.getString(getPersistentGeofenceKey(id), null) ?: continue
+          val gfArgs = JSONArray(gfJson)
+          val list = ArrayList<Any>()
+
+          for (i in 0 until gfArgs.length()) {
+            list.add(gfArgs.get(i) as Any)
+          }
+
+          val geoClient = LocationServices.getGeofencingClient(context)
+
+          registerGeofence(context, geoClient, list, null, false)
         }
-        persistentGeofences = HashSet<String>(persistentGeofences)
-        persistentGeofences.remove(id)
+      }
+    }
+
+    @JvmStatic
+    private fun addGeofenceToCache(context: Context?, id: String, args: ArrayList<*>) {
+      synchronized(sGeofenceCacheLock) {
+        val p = context?.getSharedPreferences(SHARED_PREFERENCES_KEY, Context.MODE_PRIVATE)
+        val obj = JSONArray(args)
+        var persistentGeofences = p?.getStringSet(PERSISTENT_GEOFENCES_IDS, null)
+
+        persistentGeofences = if (persistentGeofences == null) {
+          HashSet<String>()
+        } else {
+          HashSet<String>(persistentGeofences)
+        }
+
+        persistentGeofences.add(id)
+
+        context?.getSharedPreferences(SHARED_PREFERENCES_KEY, Context.MODE_PRIVATE)
+                ?.edit()
+                ?.putStringSet(PERSISTENT_GEOFENCES_IDS, persistentGeofences)
+                ?.putString(getPersistentGeofenceKey(id), obj.toString())
+                ?.apply()
+      }
+    }
+
+    @JvmStatic
+    private fun getGeofencingRequest(geofence: Geofence, initialTrigger: Int): GeofencingRequest {
+      return GeofencingRequest.Builder().apply {
+        setInitialTrigger(initialTrigger)
+        addGeofence(geofence)
+      }.build()
+    }
+
+    @JvmStatic
+    private fun getGeofencePendingIndent(context: Context?, callbackHandle: Long): PendingIntent {
+      val intent = Intent(context, GeofencingBroadcastReceiver::class.java)
+              .putExtra(CALLBACK_HANDLE_KEY, callbackHandle)
+      return PendingIntent.getBroadcast(context, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT)
+    }
+
+    @JvmStatic
+    private fun removeGeofenceFromCache(context: Context?, id: String) {
+      synchronized(sGeofenceCacheLock) {
+        val p = context?.getSharedPreferences(SHARED_PREFERENCES_KEY, Context.MODE_PRIVATE)
+
+        val persistentGeofences: MutableSet<String>? = p?.getStringSet(PERSISTENT_GEOFENCES_IDS, null) ?: return
+//        persistentGeofences = HashSet<String>(persistentGeofences)
+//        persistentGeofences.remove(id)
+        persistentGeofences?.remove(id)
+
         p.edit()
-                .remove(getPersistentGeofenceKey(id))
-                .putStringSet(PERSISTENT_GEOFENCES_IDS, persistentGeofences)
-                .apply()
+                ?.remove(getPersistentGeofenceKey(id))
+                ?.putStringSet(PERSISTENT_GEOFENCES_IDS, persistentGeofences)
+                ?.apply()
       }
     }
 
     @JvmStatic
     private fun getPersistentGeofenceKey(id: String): String {
-      return "persistent_geofence/" + id
-    }
-  }
-
-  override fun onMethodCall(call: MethodCall, result: Result) {
-    val args = call.arguments<ArrayList<*>>()
-    when(call.method) {
-      "GeofencingPlugin.initializeService" -> {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-          mActivity?.requestPermissions(REQUIRED_PERMISSIONS, 12312)
-        }
-        initializeService(mContext, args)
-        result.success(true)
-      }
-      "GeofencingPlugin.registerGeofence" -> registerGeofence(mContext,
-              mGeofencingClient,
-              args,
-              result,
-              true)
-      "GeofencingPlugin.removeGeofence" -> removeGeofence(mContext,
-              mGeofencingClient,
-              args,
-              result)
-      "GeofencingPlugin.getRegisteredGeofenceIds" -> getRegisteredGeofenceIds(mContext, result)
-      else -> result.notImplemented()
+      return "persistent_geofence/$id"
     }
   }
 }
